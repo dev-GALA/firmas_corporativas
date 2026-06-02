@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo \"=== centro-parla \\(sin cargo, sin maps_url\\) ===\" && cat firmas_out/centro-parla.html && echo \"\" && echo \"=== buzon-info \\(sin cargo, sin telefono, sin maps\\) ===\" && cat firmas_out/buzon-info.html && rm -rf firmas_out /tmp/test.csv)",
+      "Bash(sed -i 's#grupo-gala\\\\.github\\\\.io#dev-gala.github.io#g' plantillas/*.html)",
+      "Bash(sed -i 's#grupo-gala\\\\.github\\\\.io#dev-gala.github.io#g' README.md)",
+      "Bash(sed -i 's#grupo-gala\\\\.github\\\\.io#dev-gala.github.io#g' CLAUDE.md)",
+      "Bash(sed -i 's#https://github.com/Grupo-Gala/firmas_corporativas#https://github.com/dev-GALA/firmas_corporativas#g' CLAUDE.md)",
+      "Bash(node script/generar-firmas.js --csv-file /tmp/test.csv --all)",
+      "Bash(node script/generar-firmas.js --help)",
+      "Bash(node --check script/generar-firmas.js)",
+      "Bash(curl -sL -o /tmp/empleados.csv 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQb6hM2TxHHlIwqRp8VeN6nVf_DFDSMbfhPUq57NQPBZUFAuzVJzChg1Iwdg867A-pNBNmvl9WZF-Yj/pub?gid=0&single=true&output=csv')",
+      "Bash(sed 's/\\\\\\(CSV_URL=.\\\\{60\\\\}\\\\\\).*/\\\\1.../' .env)",
+      "Bash(git check-ignore *)",
+      "Bash(node /tmp/analizar.js)",
+      "Bash(grep -n \"slug-del-nombre\\\\|{slug-del-nombre}\\\\|Genera \\\\`firmas_out\" CLAUDE.md)",
+      "Bash(node -e ' *)",
+      "Bash(node script/generar-firmas.js --csv-file /tmp/empleados.csv --only \"88\")"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}

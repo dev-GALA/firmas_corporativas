@@ -12,11 +12,13 @@ const TEMPLATES_DIR = path.join(PROJECT_ROOT, 'plantillas');
 const OUT_DIR = path.join(PROJECT_ROOT, 'firmas_out');
 
 function parseArgs(argv) {
-  const args = { onlyExpr: null, all: false, csvFile: null };
+  const args = { onlyExpr: null, all: false, csvFile: null, marca: null, tipo: null };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--all') args.all = true;
     else if (a === '--only') args.onlyExpr = argv[++i];
+    else if (a === '--marca') args.marca = argv[++i];
+    else if (a === '--tipo') args.tipo = argv[++i];
     else if (a === '--csv-file') args.csvFile = argv[++i];
     else if (a === '--help' || a === '-h') {
       console.log(
@@ -24,9 +26,14 @@ function parseArgs(argv) {
         'opciones:\n' +
         '  --all                Genera todas las filas con `marca` rellena, sin preguntar.\n' +
         '  --only "2,4,43-44"   Genera solo esas filas (numeración del Sheet de Google).\n' +
+        '  --marca NOMBRE       Solo filas de esa marca (Autoescuela / Formacion).\n' +
+        '  --tipo NOMBRE        Solo filas de ese tipo firma (Personal / Local / Servicios).\n' +
         '  --csv-file PATH      Lee un CSV local en vez de descargar CSV_URL.\n' +
         '  --help               Muestra esta ayuda.\n\n' +
-        'Sin opciones: modo interactivo (lista las filas y pregunta cuáles generar).'
+        'Los filtros se combinan con AND, p. ej. --marca Autoescuela --tipo Personal\n' +
+        'genera solo las firmas Personales de Autoescuela. --only y los filtros de\n' +
+        'columna tambien se pueden combinar.\n\n' +
+        'Sin opciones: modo interactivo (lista las filas y pregunta cuales generar).'
       );
       process.exit(0);
     }
@@ -128,6 +135,25 @@ function slug(text) {
     .replace(/^-+|-+$/g, '');
 }
 
+// Nombre de fichero único por firma. El nombre mostrado no es único (varios
+// centros Local comparten el mismo `nombre` con distinto buzón de email), así
+// que si el slug del nombre está repetido en el CSV se desambigua con la parte
+// local del email. `used` garantiza unicidad absoluta como última red.
+function buildOutName(row, slugCounts, used) {
+  const base = slug(row.nombre) || `fila-${row._sheetRow}`;
+  let name = base;
+  if ((slugCounts[base] || 0) > 1) {
+    const local = (row.email || '').split('@')[0];
+    const disc = slug(local) || `fila-${row._sheetRow}`;
+    name = `${base}--${disc}`;
+  }
+  let candidate = name;
+  let n = 2;
+  while (used.has(candidate)) candidate = `${name}-${n++}`;
+  used.add(candidate);
+  return `${candidate}.html`;
+}
+
 function normalizeQrFilename(qr) {
   if (!qr) return '';
   const trimmed = qr.trim();
@@ -164,7 +190,7 @@ function renderTemplate(tpl, data) {
   let out = kept.join('\n');
   out = out.replace(/<div[^>]*>\s*<\/div>\s*/g, '');
   for (const [k, v] of Object.entries(data)) {
-    out = out.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'g'), v);
+    out = out.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'g'), () => v);
   }
   return out;
 }
@@ -196,6 +222,61 @@ function parseRowSelector(expr, validRows) {
   return sel;
 }
 
+// Convierte la respuesta del modo interactivo en criterios.
+// Tokens separados por coma: números/rangos (filas), `marca:x`, `tipo:y`, `todas`.
+function parseInteractiveAnswer(answer) {
+  const rowParts = [];
+  const marcas = [];
+  const tipos = [];
+  let todas = false;
+  for (const t of answer.split(',').map(s => s.trim()).filter(Boolean)) {
+    if (t.toLowerCase() === 'todas') { todas = true; continue; }
+    const m = t.match(/^(marca|tipo)\s*:\s*(.+)$/i);
+    if (m) {
+      if (m[1].toLowerCase() === 'marca') marcas.push(m[2].trim());
+      else tipos.push(m[2].trim());
+    } else {
+      rowParts.push(t);
+    }
+  }
+  return {
+    rowExpr: todas ? 'todas' : (rowParts.length ? rowParts.join(',') : null),
+    marcas,
+    tipos,
+  };
+}
+
+// Aplica filtros de fila (--only) y de columna (--marca/--tipo) sobre las filas
+// procesables. Los criterios presentes se combinan con AND; dentro de un mismo
+// campo (varias marcas o tipos) se combinan con OR. Sin ningún criterio → todas.
+function applyFilters(procesables, { rowExpr, marcas, tipos }) {
+  const warnings = [];
+  const validRows = procesables.map(r => r._sheetRow);
+  const rowSet = rowExpr ? parseRowSelector(rowExpr, validRows) : null;
+
+  const norm = s => (s || '').toLowerCase();
+  const marcaSet = marcas && marcas.length ? new Set(marcas.map(norm)) : null;
+  const tipoSet = tipos && tipos.length ? new Set(tipos.map(norm)) : null;
+
+  if (marcaSet) {
+    const present = new Set(procesables.map(r => norm(r.marca)));
+    for (const v of marcaSet) if (!present.has(v)) warnings.push(`marca "${v}" no aparece en el CSV`);
+  }
+  if (tipoSet) {
+    const present = new Set(procesables.map(r => norm(r['tipo firma'])));
+    for (const v of tipoSet) if (!present.has(v)) warnings.push(`tipo "${v}" no aparece en el CSV`);
+  }
+
+  const sel = new Set();
+  for (const r of procesables) {
+    if (rowSet && !rowSet.has(r._sheetRow)) continue;
+    if (marcaSet && !marcaSet.has(norm(r.marca))) continue;
+    if (tipoSet && !tipoSet.has(norm(r['tipo firma']))) continue;
+    sel.add(r._sheetRow);
+  }
+  return { sel, warnings };
+}
+
 async function askInteractive(rows) {
   console.log('\nEmpleados disponibles (con `marca` rellena):\n');
   const wName = Math.max(...rows.map(r => r.nombre.length));
@@ -207,7 +288,7 @@ async function askInteractive(rows) {
   console.log('');
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const answer = await new Promise(resolve => {
-    rl.question('¿Qué filas generar? (ej. 2,4,43-44  ·  "todas"  ·  Enter para cancelar)\n> ', a => { rl.close(); resolve(a); });
+    rl.question('¿Qué generar? (filas: 2,4,43-44  ·  filtro: marca:autoescuela  o  tipo:personal  ·  "todas"  ·  Enter para cancelar)\n> ', a => { rl.close(); resolve(a); });
   });
   return answer.trim();
 }
@@ -244,23 +325,36 @@ async function main() {
   }
   console.log(`${all.length} filas totales, ${procesables.length} con \`marca\` rellena.`);
 
-  let selected;
-  const validRows = procesables.map(r => r._sheetRow);
-  if (args.all) {
-    selected = new Set(validRows);
-  } else if (args.onlyExpr) {
-    selected = parseRowSelector(args.onlyExpr, validRows);
-  } else {
+  let criterios;
+  const noFlags = !args.all && !args.onlyExpr && !args.marca && !args.tipo;
+  if (noFlags) {
     const answer = await askInteractive(procesables);
     if (!answer) { console.log('Cancelado.'); return; }
-    selected = parseRowSelector(answer, validRows);
+    criterios = parseInteractiveAnswer(answer);
+  } else {
+    // --all sin otros filtros → todas (applyFilters trata todo vacío como "todas").
+    criterios = {
+      rowExpr: args.onlyExpr,
+      marcas: args.marca ? [args.marca] : [],
+      tipos: args.tipo ? [args.tipo] : [],
+    };
   }
+  const { sel: selected, warnings: selWarnings } = applyFilters(procesables, criterios);
+  for (const w of selWarnings) console.warn('⚠ ' + w);
   if (!selected || selected.size === 0) {
     console.error('❌ Nada que generar.');
     process.exit(1);
   }
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
+  // Conteo de slugs sobre TODAS las procesables (no solo las seleccionadas) para
+  // que el nombre de cada fichero sea estable entre tandas distintas.
+  const slugCounts = {};
+  for (const r of procesables) {
+    const s = slug(r.nombre) || `fila-${r._sheetRow}`;
+    slugCounts[s] = (slugCounts[s] || 0) + 1;
+  }
+  const usedNames = new Set();
   let ok = 0;
   const warnings = [];
   for (const row of procesables) {
@@ -288,7 +382,7 @@ async function main() {
       qr_filename: qrFile,
     };
     const html = renderTemplate(tpl, data);
-    const outName = `${slug(row.nombre)}.html`;
+    const outName = buildOutName(row, slugCounts, usedNames);
     fs.writeFileSync(path.join(OUT_DIR, outName), html);
     console.log(`  ✓ [${row._sheetRow}] ${row.nombre} → firmas_out/${outName}`);
     ok++;
